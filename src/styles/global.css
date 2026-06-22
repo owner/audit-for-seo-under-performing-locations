@@ -1,0 +1,36 @@
+@import url('https://api.fontshare.com/v2/css?f[]=switzer@400,500,600,700&display=swap');
+@import 'tailwindcss';
+
+@source "../**/*.{ts,tsx}";
+
+@theme {
+  --color-zeus-background: #ffffff;
+  --color-zeus-text: #000000;
+  --color-zeus-text-secondary: #333333;
+  --color-zeus-placeholder: #999999;
+  --color-zeus-border: #e0e0e0;
+  --color-zeus-input-bg: #ffffff;
+  --color-zeus-button-bg: #000000;
+  --color-zeus-button-text: #ffffff;
+  --color-zeus-error: #ff4444;
+  --color-zeus-success: #22c55e;
+  --color-zeus-warning: #f59e0b;
+
+  --spacing-xs: 4px;
+  --spacing-sm: 8px;
+  --spacing-md: 16px;
+  --spacing-lg: 24px;
+  --spacing-xl: 32px;
+  --spacing-xxl: 48px;
+
+  --font-switzer: 'Switzer', -apple-system, BlinkMacSystemFont, sans-serif;
+
+  --shadow-light: 0 2px 4px rgba(0, 0, 0, 0.1);
+  --shadow-medium: 0 4px 8px rgba(0, 0, 0, 0.1);
+}
+
+body {
+  font-family: var(--font-switzer);
+  background-color: var(--color-zeus-background);
+  color: var(--color-zeus-text);
+}

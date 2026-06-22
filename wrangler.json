@@ -1,0 +1,58 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "account_id": "a4fd24a054b36ecc08f6d3948f18255d",
+  "name": "audit-for-seo-under-performing-locations",
+  "main": "./src/server.ts",
+  "compatibility_date": "2025-01-24",
+  "compatibility_flags": ["nodejs_compat"],
+  "workers_dev": false,
+  "observability": {
+    "enabled": true
+  },
+  "vars": {
+    "ENVIRONMENT": "development",
+    "ZEUS_APP_ID": "949475a5-a6ff-4ed2-b15b-8a73a9183142"
+  },
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "audit-for-seo-under-performing-locations-db",
+      "database_id": "edd93deb-2890-40ed-a74c-d1a7c95abba6",
+      "migrations_dir": "migrations"
+    }
+  ],
+  "r2_buckets": [
+    {
+      "binding": "STORAGE",
+      "bucket_name": "audit-for-seo-under-performing-locations-storage"
+    }
+  ],
+  "env": {
+    "production": {
+      "name": "audit-for-seo-under-performing-locations",
+      "tail_consumers": [
+        {
+          "service": "zeus-log-drain"
+        }
+      ],
+      "vars": {
+        "ENVIRONMENT": "production",
+        "ZEUS_APP_ID": "949475a5-a6ff-4ed2-b15b-8a73a9183142"
+      },
+      "d1_databases": [
+        {
+          "binding": "DB",
+          "database_name": "audit-for-seo-under-performing-locations-db",
+          "database_id": "edd93deb-2890-40ed-a74c-d1a7c95abba6",
+          "migrations_dir": "migrations"
+        }
+      ],
+      "r2_buckets": [
+        {
+          "binding": "STORAGE",
+          "bucket_name": "audit-for-seo-under-performing-locations-storage"
+        }
+      ]
+    }
+  }
+}
