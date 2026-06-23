@@ -110,7 +110,7 @@ function check(id: string, label: string, status: CheckStatus, detail: string): 
 // ─── Main audit function ───────────────────────────────────────────────────
 
 export const runAudit = createServerFn({ method: 'POST' })
-  .inputValidator((data: { locationId: string }) => data)
+  .validator((data: { locationId: string }) => data)
   .handler(async ({ data }): Promise<AuditReport> => {
     const { requireAuth } = await import('../lib/auth.server')
     await requireAuth()
