@@ -4,7 +4,7 @@ import { setCookie } from '@tanstack/react-start/server'
 import { createRemoteJWKSet, jwtVerify } from 'jose'
 
 const handleCallback = createServerFn({ method: 'GET' })
-  .inputValidator((data: { token: string; refresh?: string }) => data)
+  .validator((data: { token: string; refresh?: string }) => data)
   .handler(async ({ data }) => {
     const mod = await import('cloudflare:workers')
     const env = mod.env as unknown as Env
