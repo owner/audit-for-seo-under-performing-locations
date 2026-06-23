@@ -42,7 +42,7 @@ export const incrementCounter = createServerFn({ method: 'POST' }).handler(async
 })
 
 export const uploadFile = createServerFn({ method: 'POST' })
-  .inputValidator((data: { name: string; type: string; base64: string }) => data)
+  .validator((data: { name: string; type: string; base64: string }) => data)
   .handler(async ({ data }) => {
     const { requireAuth } = await import('../lib/auth.server')
     await requireAuth()
