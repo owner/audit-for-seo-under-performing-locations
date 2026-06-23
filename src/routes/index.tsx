@@ -1,144 +1,334 @@
-import { createFileRoute, useRouter } from '@tanstack/react-router'
-import {
-  getCurrentUser,
-  doRequireAuth,
-  doSignOut,
-  getCounter,
-  incrementCounter,
-  uploadFile,
-  listFiles,
-} from './-index.api'
+import { createFileRoute } from '@tanstack/react-router'
+import { useState } from 'react'
+import { getCurrentUser, doRequireAuth, doSignOut, runAudit } from './-index.api'
+import type { AuditReport, CheckItem, CheckStatus } from './-index.api'
+
+// These imports are only here to keep the build happy if the old -index.api.ts
+// is still in place. They are never actually called.
+// @ts-ignore
+const _unused = { getCounter: null, listFiles: null, incrementCounter: null, uploadFile: null }
 
 export const Route = createFileRoute('/')({
   loader: async () => {
     const user = await getCurrentUser()
-    if (!user) {
-      await doRequireAuth()
-    }
-    if (user?.restricted) {
-      return { user, restricted: true as const, counter: { value: 0 }, files: { files: [] } }
-    }
-    const [counter, files] = await Promise.all([getCounter(), listFiles()])
-    return { user: user!, restricted: false as const, counter, files }
+    if (!user) await doRequireAuth()
+    return { user: user! }
   },
   component: IndexPage,
 })
 
+// ─── Status helpers ────────────────────────────────────────────────────────
+
+const STATUS_LABEL: Record<CheckStatus, string> = {
+  pass: '✅ Pass',
+  fail: '❌ Fail',
+  warning: '⚠️ Warning',
+  na: '➖ N/A',
+  pending: '🔲 Pending',
+}
+
+const STATUS_COLOR: Record<CheckStatus, string> = {
+  pass: '#166534',
+  fail: '#991b1b',
+  warning: '#92400e',
+  na: '#6b7280',
+  pending: '#374151',
+}
+
+const STATUS_BG: Record<CheckStatus, string> = {
+  pass: '#dcfce7',
+  fail: '#fee2e2',
+  warning: '#fef3c7',
+  na: '#f3f4f6',
+  pending: '#f9fafb',
+}
+
+const HEALTH_EMOJI: Record<string, string> = {
+  healthy: '🟢',
+  'needs-work': '🟡',
+  critical: '🔴',
+  unknown: '⬜',
+}
+
+// ─── Sub-components ────────────────────────────────────────────────────────
+
+function StatusBadge({ status }: { status: CheckStatus }) {
+  return (
+    <span
+      style={{
+        display: 'inline-block',
+        padding: '2px 8px',
+        borderRadius: 4,
+        fontSize: 12,
+        fontWeight: 500,
+        background: STATUS_BG[status],
+        color: STATUS_COLOR[status],
+        whiteSpace: 'nowrap',
+      }}
+    >
+      {STATUS_LABEL[status]}
+    </span>
+  )
+}
+
+function CheckTable({ title, checks }: { title: string; checks: CheckItem[] }) {
+  const fails = checks.filter((c) => c.status === 'fail').length
+  const warnings = checks.filter((c) => c.status === 'warning').length
+  const passes = checks.filter((c) => c.status === 'pass').length
+
+  return (
+    <div style={{ marginBottom: 32 }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 10 }}>
+        <h3 style={{ fontSize: 15, fontWeight: 600, color: '#111827', margin: 0 }}>{title}</h3>
+        <span style={{ fontSize: 12, color: '#6b7280' }}>
+          {passes} pass · {warnings} warning · {fails} fail
+        </span>
+      </div>
+      <div style={{ border: '1px solid #e5e7eb', borderRadius: 8, overflow: 'hidden' }}>
+        <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
+          <thead>
+            <tr style={{ background: '#f9fafb' }}>
+              <th style={{ padding: '8px 14px', textAlign: 'left', fontWeight: 500, color: '#6b7280', fontSize: 11, textTransform: 'uppercase', letterSpacing: '0.05em', width: '40%', borderBottom: '1px solid #e5e7eb' }}>Check</th>
+              <th style={{ padding: '8px 14px', textAlign: 'left', fontWeight: 500, color: '#6b7280', fontSize: 11, textTransform: 'uppercase', letterSpacing: '0.05em', width: '15%', borderBottom: '1px solid #e5e7eb' }}>Status</th>
+              <th style={{ padding: '8px 14px', textAlign: 'left', fontWeight: 500, color: '#6b7280', fontSize: 11, textTransform: 'uppercase', letterSpacing: '0.05em', borderBottom: '1px solid #e5e7eb' }}>Detail</th>
+            </tr>
+          </thead>
+          <tbody>
+            {checks.map((c, i) => (
+              <tr key={c.id} style={{ borderTop: i > 0 ? '1px solid #f3f4f6' : undefined, background: c.status === 'fail' ? '#fff9f9' : 'white' }}>
+                <td style={{ padding: '9px 14px', color: '#111827', fontWeight: 500, verticalAlign: 'top' }}>{c.label}</td>
+                <td style={{ padding: '9px 14px', verticalAlign: 'top' }}><StatusBadge status={c.status} /></td>
+                <td style={{ padding: '9px 14px', color: '#6b7280', verticalAlign: 'top', lineHeight: 1.5 }}>{c.detail}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  )
+}
+
+// ─── Main page ─────────────────────────────────────────────────────────────
+
 function IndexPage() {
-  const { user, restricted, counter, files } = Route.useLoaderData()
-  const router = useRouter()
-
-  async function handleIncrement() {
-    await incrementCounter()
-    router.invalidate()
-  }
-
-  async function handleUpload(e: React.FormEvent<HTMLFormElement>) {
-    e.preventDefault()
-    const form = e.currentTarget
-    const input = form.elements.namedItem('file') as HTMLInputElement
-    const file = input.files?.[0]
-    if (!file) return
-
-    const buffer = await file.arrayBuffer()
-    const base64 = btoa(String.fromCharCode(...new Uint8Array(buffer)))
-
-    await uploadFile({
-      data: { name: file.name, type: file.type, base64 },
-    })
-    form.reset()
-    router.invalidate()
-  }
+  const { user } = Route.useLoaderData()
+  const [locationId, setLocationId] = useState('')
+  const [loading, setLoading] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  const [report, setReport] = useState<AuditReport | null>(null)
 
   async function handleSignOut() {
     const { logoutUrl } = await doSignOut()
     window.location.href = logoutUrl
   }
 
-  if (restricted) {
-    return (
-      <div className="flex min-h-screen flex-col items-center justify-center px-md">
-        <h1 className="text-2xl font-bold mb-sm">Access Restricted</h1>
-        <p className="text-zeus-text-secondary text-sm text-center max-w-[24rem] mb-lg">
-          Your account ({user?.email}) does not have access to this app. Contact an administrator if
-          you believe this is an error.
-        </p>
-        <button
-          type="button"
-          onClick={handleSignOut}
-          className="bg-zeus-button-bg text-zeus-button-text px-lg py-sm text-sm font-medium"
-        >
-          Sign out
-        </button>
-      </div>
-    )
+  async function handleRun(e: React.FormEvent) {
+    e.preventDefault()
+    if (!locationId.trim()) return
+    setLoading(true)
+    setError(null)
+    setReport(null)
+    try {
+      const result = await runAudit({ data: { locationId: locationId.trim() } })
+      setReport(result)
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : 'Something went wrong. Check the location ID and try again.')
+    } finally {
+      setLoading(false)
+    }
   }
 
   return (
-    <div className="mx-auto max-w-[36rem] px-md py-xl">
-      <header className="mb-xl flex items-center justify-between">
-        <h1 className="text-2xl font-semibold">Audit for SEO Under-Performing Locations</h1>
-        <div className="flex items-center gap-md">
-          <span className="text-sm text-zeus-text-secondary">{user.email}</span>
-          <button
-            type="button"
-            onClick={handleSignOut}
-            className="rounded border border-zeus-border px-sm py-xs text-sm hover:bg-gray-50"
-          >
-            Sign out
-          </button>
+    <div style={{ minHeight: '100vh', background: '#f9fafb' }}>
+      {/* Header */}
+      <header style={{ background: 'white', borderBottom: '1px solid #e5e7eb', padding: '0 24px' }}>
+        <div style={{ maxWidth: 1100, margin: '0 auto', height: 56, display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+            <span style={{ fontSize: 18, fontWeight: 700, color: '#111827', letterSpacing: '-0.02em' }}>SEO Audit</span>
+            <span style={{ fontSize: 12, background: '#eff6ff', color: '#1d4ed8', padding: '2px 8px', borderRadius: 4, fontWeight: 500 }}>Under-Performing Locations</span>
+          </div>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+            <span style={{ fontSize: 13, color: '#6b7280' }}>{user.email}</span>
+            <button type="button" onClick={handleSignOut} style={{ fontSize: 13, color: '#374151', background: 'white', border: '1px solid #d1d5db', borderRadius: 6, padding: '5px 12px', cursor: 'pointer' }}>
+              Sign out
+            </button>
+          </div>
         </div>
       </header>
 
-      <section className="mb-xl rounded-lg border border-zeus-border p-lg">
-        <h2 className="mb-md text-lg font-medium">Counter</h2>
-        <div className="flex items-center gap-lg">
-          <span className="text-3xl font-bold">{counter.value}</span>
-          <button
-            type="button"
-            onClick={handleIncrement}
-            className="rounded bg-zeus-button-bg px-md py-sm text-sm text-zeus-button-text hover:opacity-90"
-          >
-            Increment
-          </button>
-        </div>
-      </section>
+      <main style={{ maxWidth: 1100, margin: '0 auto', padding: '32px 24px' }}>
 
-      <section className="rounded-lg border border-zeus-border p-lg">
-        <h2 className="mb-md text-lg font-medium">File Upload</h2>
-        <form onSubmit={handleUpload} className="mb-lg flex items-center gap-md">
-          <input type="file" name="file" className="text-sm" />
-          <button
-            type="submit"
-            className="rounded bg-zeus-button-bg px-md py-sm text-sm text-zeus-button-text hover:opacity-90"
-          >
-            Upload
-          </button>
-        </form>
-        {files.files.length > 0 ? (
-          <ul className="space-y-sm">
-            {files.files.map((file) => (
-              <li
-                key={file.key}
-                className="flex items-center justify-between rounded border border-zeus-border px-md py-sm text-sm"
-              >
-                <span className="font-medium">{file.key}</span>
-                <span className="text-zeus-text-secondary">{formatBytes(file.size)}</span>
-              </li>
-            ))}
-          </ul>
-        ) : (
-          <p className="text-sm text-zeus-text-secondary">No files uploaded yet.</p>
+        {/* Search bar */}
+        <div style={{ background: 'white', border: '1px solid #e5e7eb', borderRadius: 10, padding: '24px 28px', marginBottom: 28 }}>
+          <h2 style={{ fontSize: 16, fontWeight: 600, color: '#111827', margin: '0 0 6px' }}>Run SEO Diagnostic</h2>
+          <p style={{ fontSize: 13, color: '#6b7280', margin: '0 0 16px' }}>Enter a location ID to pull all available data and run automated checks.</p>
+          <form onSubmit={handleRun} style={{ display: 'flex', gap: 10 }}>
+            <input
+              type="text"
+              value={locationId}
+              onChange={(e) => setLocationId(e.target.value)}
+              placeholder="e.g. LOC-00423"
+              style={{ flex: 1, padding: '9px 14px', fontSize: 14, border: '1px solid #d1d5db', borderRadius: 7, outline: 'none', fontFamily: 'monospace' }}
+            />
+            <button
+              type="submit"
+              disabled={loading || !locationId.trim()}
+              style={{ padding: '9px 22px', fontSize: 14, fontWeight: 500, background: loading ? '#9ca3af' : '#1d4ed8', color: 'white', border: 'none', borderRadius: 7, cursor: loading ? 'not-allowed' : 'pointer' }}
+            >
+              {loading ? 'Running…' : 'Run Audit'}
+            </button>
+          </form>
+          {error && (
+            <div style={{ marginTop: 12, padding: '10px 14px', background: '#fef2f2', border: '1px solid #fecaca', borderRadius: 6, fontSize: 13, color: '#991b1b' }}>
+              {error}
+            </div>
+          )}
+        </div>
+
+        {/* Report */}
+        {report && (
+          <div>
+
+            {/* Customer snapshot */}
+            <div style={{ background: 'white', border: '1px solid #e5e7eb', borderRadius: 10, padding: '24px 28px', marginBottom: 24 }}>
+              <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', marginBottom: 16 }}>
+                <div>
+                  <h2 style={{ fontSize: 20, fontWeight: 700, color: '#111827', margin: '0 0 4px' }}>{report.brand}</h2>
+                  <a href={report.website} target="_blank" rel="noreferrer" style={{ fontSize: 13, color: '#2563eb' }}>{report.website}</a>
+                </div>
+                <span style={{ fontSize: 12, background: '#f0fdf4', color: '#166534', border: '1px solid #bbf7d0', borderRadius: 6, padding: '4px 10px', fontWeight: 500 }}>
+                  {report.status}
+                </span>
+              </div>
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))', gap: 12 }}>
+                {[
+                  ['Location ID', report.locationId],
+                  ['Primary market', report.primaryMarket],
+                  ['CSM / AM', report.csm],
+                  ['SEO owner', report.seoOwner],
+                  ['Date opened', report.dateOpened],
+                  ['Yext managed', report.yextManaged ? 'Yes' : 'No'],
+                  ['Launch date', report.launchDate],
+                ].map(([label, value]) => (
+                  <div key={label} style={{ background: '#f9fafb', borderRadius: 6, padding: '10px 14px' }}>
+                    <div style={{ fontSize: 11, color: '#9ca3af', fontWeight: 500, textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: 4 }}>{label}</div>
+                    <div style={{ fontSize: 13, fontWeight: 500, color: '#111827' }}>{value}</div>
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            {/* Key metrics */}
+            <div style={{ background: 'white', border: '1px solid #e5e7eb', borderRadius: 10, padding: '24px 28px', marginBottom: 24 }}>
+              <h3 style={{ fontSize: 15, fontWeight: 600, color: '#111827', margin: '0 0 14px' }}>📊 Key Metrics (last 30 days)</h3>
+              <div style={{ border: '1px solid #e5e7eb', borderRadius: 8, overflow: 'hidden' }}>
+                <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
+                  <thead>
+                    <tr style={{ background: '#f9fafb' }}>
+                      {['Metric', 'Current', 'Trend (90d)', 'Benchmark'].map((h) => (
+                        <th key={h} style={{ padding: '8px 14px', textAlign: 'left', fontWeight: 500, color: '#6b7280', fontSize: 11, textTransform: 'uppercase', letterSpacing: '0.05em', borderBottom: '1px solid #e5e7eb' }}>{h}</th>
+                      ))}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {report.metrics.map((m, i) => (
+                      <tr key={m.label} style={{ borderTop: i > 0 ? '1px solid #f3f4f6' : undefined }}>
+                        <td style={{ padding: '9px 14px', fontWeight: 500, color: '#111827' }}>{m.label}</td>
+                        <td style={{ padding: '9px 14px', color: '#111827', fontFamily: 'monospace' }}>{m.current}</td>
+                        <td style={{ padding: '9px 14px', color: m.trend.startsWith('↓') ? '#991b1b' : m.trend.startsWith('↑') ? '#166534' : '#6b7280' }}>{m.trend}</td>
+                        <td style={{ padding: '9px 14px', color: '#6b7280' }}>{m.benchmark}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+
+            {/* Health summary */}
+            <div style={{ background: 'white', border: '1px solid #e5e7eb', borderRadius: 10, padding: '24px 28px', marginBottom: 24 }}>
+              <h3 style={{ fontSize: 15, fontWeight: 600, color: '#111827', margin: '0 0 14px' }}>🏥 Health Summary</h3>
+              <div style={{ border: '1px solid #e5e7eb', borderRadius: 8, overflow: 'hidden' }}>
+                <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
+                  <thead>
+                    <tr style={{ background: '#f9fafb' }}>
+                      {['Area', 'Rating', 'Top issue', 'Priority'].map((h) => (
+                        <th key={h} style={{ padding: '8px 14px', textAlign: 'left', fontWeight: 500, color: '#6b7280', fontSize: 11, textTransform: 'uppercase', letterSpacing: '0.05em', borderBottom: '1px solid #e5e7eb' }}>{h}</th>
+                      ))}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {report.healthSummary.map((h, i) => (
+                      <tr key={h.area} style={{ borderTop: i > 0 ? '1px solid #f3f4f6' : undefined, background: h.rating === 'critical' ? '#fff9f9' : 'white' }}>
+                        <td style={{ padding: '9px 14px', fontWeight: 500, color: '#111827' }}>{h.area}</td>
+                        <td style={{ padding: '9px 14px' }}>{HEALTH_EMOJI[h.rating]} {h.rating}</td>
+                        <td style={{ padding: '9px 14px', color: '#6b7280' }}>{h.topIssue}</td>
+                        <td style={{ padding: '9px 14px' }}>
+                          <span style={{ display: 'inline-block', padding: '2px 8px', borderRadius: 4, fontSize: 12, fontWeight: 600, background: h.priority === 'P0' ? '#fee2e2' : h.priority === 'P1' ? '#fef3c7' : '#f3f4f6', color: h.priority === 'P0' ? '#991b1b' : h.priority === 'P1' ? '#92400e' : '#374151' }}>{h.priority}</span>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+
+            {/* Diagnostics */}
+            <div style={{ background: 'white', border: '1px solid #e5e7eb', borderRadius: 10, padding: '24px 28px', marginBottom: 24 }}>
+              <h3 style={{ fontSize: 15, fontWeight: 600, color: '#111827', margin: '0 0 20px' }}>🔎 Diagnostics</h3>
+              <CheckTable title="1. Google Business Profile & Listings" checks={report.gbpChecks} />
+              <CheckTable title="2. On-Page & Schema" checks={report.onPageChecks} />
+              <CheckTable title="3. Technical & Indexing" checks={report.technicalChecks} />
+              <CheckTable title="4. Rankings, Content & Reviews" checks={report.rankingsChecks} />
+              <CheckTable title="5. Citations & Local Authority" checks={report.citationsChecks} />
+              <CheckTable title="6. LLM / AEO Visibility ★" checks={report.llmChecks} />
+            </div>
+
+            {/* Summary */}
+            <div style={{ background: 'white', border: '1px solid #e5e7eb', borderRadius: 10, padding: '24px 28px', marginBottom: 24 }}>
+              <h3 style={{ fontSize: 15, fontWeight: 600, color: '#111827', margin: '0 0 16px' }}>🧾 Summary & Recommendation</h3>
+              <div style={{ marginBottom: 14 }}>
+                <div style={{ fontSize: 11, color: '#9ca3af', fontWeight: 500, textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: 6 }}>Diagnosis</div>
+                <div style={{ fontSize: 13, color: '#111827', lineHeight: 1.6, padding: '10px 14px', background: '#f9fafb', borderRadius: 6 }}>{report.diagnosis}</div>
+              </div>
+              <div style={{ marginBottom: 14 }}>
+                <div style={{ fontSize: 11, color: '#9ca3af', fontWeight: 500, textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: 6 }}>Top 3 actions</div>
+                <ol style={{ margin: 0, paddingLeft: 20 }}>
+                  {report.top3Actions.map((a, i) => (
+                    <li key={i} style={{ fontSize: 13, color: '#111827', marginBottom: 4, lineHeight: 1.5 }}>{a}</li>
+                  ))}
+                </ol>
+              </div>
+              <div style={{ display: 'flex', gap: 16 }}>
+                <div style={{ flex: 1, padding: '10px 14px', background: '#f9fafb', borderRadius: 6 }}>
+                  <div style={{ fontSize: 11, color: '#9ca3af', fontWeight: 500, textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: 4 }}>Expected timeline</div>
+                  <div style={{ fontSize: 13, color: '#111827' }}>{report.timeline}</div>
+                </div>
+                <div style={{ flex: 1, padding: '10px 14px', background: '#f9fafb', borderRadius: 6 }}>
+                  <div style={{ fontSize: 11, color: '#9ca3af', fontWeight: 500, textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: 4 }}>Status</div>
+                  <div style={{ fontSize: 13, color: '#111827' }}>{report.status}</div>
+                </div>
+              </div>
+            </div>
+
+          </div>
         )}
-      </section>
+
+        {/* Empty state */}
+        {!report && !loading && !error && (
+          <div style={{ textAlign: 'center', padding: '64px 24px', color: '#9ca3af' }}>
+            <div style={{ fontSize: 40, marginBottom: 12 }}>🔍</div>
+            <div style={{ fontSize: 15, fontWeight: 500, color: '#6b7280', marginBottom: 6 }}>Enter a location ID to get started</div>
+            <div style={{ fontSize: 13 }}>The audit will run automated checks and pull all available data from your connected sources.</div>
+          </div>
+        )}
+
+        {loading && (
+          <div style={{ textAlign: 'center', padding: '64px 24px', color: '#6b7280' }}>
+            <div style={{ fontSize: 13 }}>Running audit… fetching data and crawling site…</div>
+          </div>
+        )}
+
+      </main>
     </div>
   )
-}
-
-function formatBytes(bytes: number): string {
-  if (bytes === 0) return '0 B'
-  const k = 1024
-  const sizes = ['B', 'KB', 'MB', 'GB']
-  const i = Math.floor(Math.log(bytes) / Math.log(k))
-  return `${(bytes / Math.pow(k, i)).toFixed(1)} ${sizes[i]}`
 }
