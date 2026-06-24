@@ -1,4 +1,5 @@
 import { createServerFn } from '@tanstack/react-start'
+import { querySnowflake, type SnowflakeEnv } from '../lib/snowflake'
 
 async function getWorkerEnv() {
   const mod = await import('cloudflare:workers')
@@ -363,6 +364,49 @@ function buildCriticalAlerts(params: {
   })
 }
 
+const SNOWFLAKE_LOCATION_SQL = `
+  WITH metrics AS (
+    SELECT
+      LOCATION_ID,
+      MAX(CASE WHEN IS_LATEST_METRICS_DAY THEN LOCATION_GOOGLE_REVIEWS_AVG_STARS_TOTAL ELSE NULL END) AS avg_star_rating,
+      MAX(CASE WHEN IS_LATEST_METRICS_DAY THEN LOCATION_GOOGLE_REVIEWS_TOTAL ELSE NULL END) AS review_count,
+      SUM(CASE WHEN DATE >= DATEADD('day', -30, CURRENT_DATE()) THEN LOCATION_ORGANIC_SESSIONS_ON_DATE ELSE 0 END) AS organic_sessions_30d,
+      SUM(CASE WHEN DATE >= DATEADD('day', -60, CURRENT_DATE()) AND DATE < DATEADD('day', -30, CURRENT_DATE()) THEN LOCATION_ORGANIC_SESSIONS_ON_DATE ELSE 0 END) AS organic_sessions_prior_30d,
+      SUM(CASE WHEN DATE >= DATEADD('day', -30, CURRENT_DATE()) THEN COALESCE(GBP_BUSINESS_IMPRESSIONS_DESKTOP_MAPS,0)+COALESCE(GBP_DESKTOP_SEARCH_BUSINESS_IMPRESSIONS,0)+COALESCE(GBP_BUSINESS_IMPRESSIONS_MOBILE_MAPS,0)+COALESCE(GBP_MOBILE_SEARCH_BUSINESS_IMPRESSIONS,0) ELSE 0 END) AS gbp_profile_views_30d,
+      SUM(CASE WHEN DATE >= DATEADD('day', -90, CURRENT_DATE()) THEN COALESCE(GBP_BUSINESS_IMPRESSIONS_DESKTOP_MAPS,0)+COALESCE(GBP_DESKTOP_SEARCH_BUSINESS_IMPRESSIONS,0)+COALESCE(GBP_BUSINESS_IMPRESSIONS_MOBILE_MAPS,0)+COALESCE(GBP_MOBILE_SEARCH_BUSINESS_IMPRESSIONS,0) ELSE 0 END) AS gbp_profile_views_90d,
+      SUM(CASE WHEN DATE >= DATEADD('day', -30, CURRENT_DATE()) THEN COALESCE(GBP_CALL_CLICKS,0) ELSE 0 END) AS gbp_calls_30d,
+      SUM(CASE WHEN DATE >= DATEADD('day', -90, CURRENT_DATE()) THEN COALESCE(GBP_CALL_CLICKS,0) ELSE 0 END) AS gbp_calls_90d,
+      SUM(CASE WHEN DATE >= DATEADD('day', -30, CURRENT_DATE()) THEN COALESCE(GBP_BUSINESS_DIRECTION_REQUESTS,0) ELSE 0 END) AS gbp_directions_30d,
+      MAX(CASE WHEN IS_LATEST_METRICS_DAY THEN AVG_LOCAL_SEO_SCORE ELSE NULL END) AS avg_local_rank
+    FROM DBT_STAGING_PROD.ANALYTICS_INT_PRODUCT.INT_DAILY_LOCATION_METRICS_JOINED
+    WHERE LOCATION_ID = ?
+    AND DATE >= DATEADD('day', -90, CURRENT_DATE())
+    GROUP BY LOCATION_ID
+  )
+  SELECT
+    l.DEFAULT_LOCATION_NAME AS brand_name,
+    l.DOMAIN_URL AS website_url,
+    l.LOCATION_CITY || ', ' || l.LOCATION_STATE AS primary_market,
+    TRIM(COALESCE(l.LOCATION_CSM_FIRST_NAME,'') || ' ' || COALESCE(l.LOCATION_CSM_LAST_NAME,'')) AS csm_name,
+    TO_VARCHAR(l.LOCATION_CREATED_AT_PT, 'YYYY-MM-DD') AS date_opened,
+    COALESCE(m.avg_star_rating, 0) AS avg_star_rating,
+    COALESCE(m.review_count, 0) AS review_count,
+    COALESCE(m.organic_sessions_30d, 0) AS organic_sessions_30d,
+    COALESCE(m.organic_sessions_prior_30d, 0) AS organic_sessions_prior_30d,
+    COALESCE(m.gbp_profile_views_30d, 0) AS gbp_profile_views_30d,
+    COALESCE(m.gbp_profile_views_90d, 0) AS gbp_profile_views_90d,
+    COALESCE(m.gbp_calls_30d, 0) AS gbp_calls_30d,
+    COALESCE(m.gbp_calls_90d, 0) AS gbp_calls_90d,
+    COALESCE(m.gbp_directions_30d, 0) AS gbp_directions_30d,
+    COALESCE(m.avg_local_rank, 0) AS avg_local_rank,
+    COALESCE(y.SYNC_STATUS, 'unknown') AS yext_sync_status,
+    CASE WHEN y.LOCATION_ID IS NOT NULL THEN 1 ELSE 0 END AS yext_managed
+  FROM DBT_STAGING_PROD.ANALYTICS_INT_PRODUCT.INT_LOCATIONS l
+  LEFT JOIN metrics m ON l.LOCATION_ID = m.LOCATION_ID
+  LEFT JOIN DBT_STAGING_PROD.ANALYTICS_INT_PRODUCT.INT_LOCATION_YEXT_STATUSES y ON l.LOCATION_ID = y.LOCATION_ID
+  WHERE l.LOCATION_ID = ?
+`
+
 export const runAudit = createServerFn({ method: 'POST' })
   .validator((data: { locationId: string }) => data)
   .handler(async ({ data }): Promise<AuditReport> => {
@@ -373,7 +417,7 @@ export const runAudit = createServerFn({ method: 'POST' })
     const { locationId } = data
 
     // ── 1. Load location profile from D1 ──────────────────────────────────
-    const location = await env.DB.prepare(`SELECT * FROM locations WHERE location_id = ? LIMIT 1`)
+    let location = await env.DB.prepare(`SELECT * FROM locations WHERE location_id = ? LIMIT 1`)
       .bind(locationId)
       .first<{
         location_id: string
@@ -403,9 +447,51 @@ export const runAudit = createServerFn({ method: 'POST' })
       }>()
 
     if (!location) {
-      throw new Error(`Location "${locationId}" not found. Check the ID and try again.`)
+      // ── Snowflake fallback for locations not in D1 ──────────────────────────
+      const sfEnv = env as unknown as SnowflakeEnv
+      if (!sfEnv.SNOWFLAKE_ACCOUNT) {
+        throw new Error(`Location "${locationId}" not found and Snowflake not configured.`)
+      }
+      let sfRows: Record<string, string | null>[]
+      try {
+        sfRows = await querySnowflake(sfEnv, SNOWFLAKE_LOCATION_SQL, [locationId, locationId])
+      } catch (e) {
+        throw new Error(`Snowflake query failed: ${String(e)}`)
+      }
+      if (!sfRows.length) {
+        throw new Error(`Location "${locationId}" not found in D1 or Snowflake.`)
+      }
+      const sf = sfRows[0]
+      location = {
+        location_id: locationId,
+        brand_name: sf['BRAND_NAME'] ?? '',
+        website_url: sf['WEBSITE_URL'] ?? '',
+        primary_market: sf['PRIMARY_MARKET'] ?? '',
+        csm_name: sf['CSM_NAME'] ?? '',
+        seo_owner: '',
+        date_opened: sf['DATE_OPENED'] ?? '',
+        yext_managed: Number(sf['YEXT_MANAGED'] ?? 0),
+        launch_date: sf['DATE_OPENED'] ?? '',
+        gbp_listing_url: '',
+        avg_star_rating: Number(sf['AVG_STAR_RATING'] ?? 0),
+        review_count: Number(sf['REVIEW_COUNT'] ?? 0),
+        gbp_profile_views_30d: Number(sf['GBP_PROFILE_VIEWS_30D'] ?? 0),
+        gbp_calls_30d: Number(sf['GBP_CALLS_30D'] ?? 0),
+        gbp_directions_30d: Number(sf['GBP_DIRECTIONS_30D'] ?? 0),
+        gbp_calls_90d: Number(sf['GBP_CALLS_90D'] ?? 0),
+        gbp_profile_views_90d: Number(sf['GBP_PROFILE_VIEWS_90D'] ?? 0),
+        organic_sessions_30d: Number(sf['ORGANIC_SESSIONS_30D'] ?? 0),
+        organic_sessions_prior_30d: Number(sf['ORGANIC_SESSIONS_PRIOR_30D'] ?? 0),
+        local_pack_impressions_30d: 0,
+        local_pack_impressions_prior_30d: 0,
+        indexed_pages: 0,
+        avg_local_rank: Number(sf['AVG_LOCAL_RANK'] ?? 0),
+        yext_sync_status: sf['YEXT_SYNC_STATUS'] ?? 'unknown',
+      }
     }
 
+    // Type narrowing guard — unreachable at runtime (Snowflake fallback always assigns above)
+    if (!location) throw new Error(`Location "${locationId}" not found in D1 or Snowflake.`)
     const website = location.website_url?.replace(/\/$/, '') ?? ''
 
     // ── 2. Fetch website for crawl-based checks ────────────────────────────
