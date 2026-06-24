@@ -21,10 +21,12 @@ function toBase64Url(buffer: ArrayBuffer): string {
 
 function pemToArrayBuffer(pem: string): ArrayBuffer {
   const base64 = pem
-    .replace(/\\n/g, '\n') // handle literal \n sequences from secret storage
+    .replace(/\\r\\n/g, '\n') // literal \r\n sequences
+    .replace(/\\n/g, '\n') // literal \n sequences from secret storage
+    .replace(/\\r/g, '\n') // literal \r sequences
     .replace(/-----BEGIN[^-]+-----/g, '')
     .replace(/-----END[^-]+-----/g, '')
-    .replace(/\s+/g, '')
+    .replace(/[^A-Za-z0-9+/=]/g, '') // strip ALL non-base64 chars (whitespace, BOM, etc.)
   const binary = atob(base64)
   const buffer = new ArrayBuffer(binary.length)
   const bytes = new Uint8Array(buffer)
