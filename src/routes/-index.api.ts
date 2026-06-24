@@ -1059,7 +1059,6 @@ export const runAudit = createServerFn({ method: 'POST' })
       .slice(0, 3)
       .concat(['—', '—', '—'])
       .slice(0, 3)
-
     const gbpDropRow = await env.DB.prepare(
       'SELECT drop_date FROM gbp_drop_dates WHERE location_id = ? AND metric = ?',
     )
