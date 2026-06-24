@@ -21,6 +21,7 @@ function toBase64Url(buffer: ArrayBuffer): string {
 
 function pemToArrayBuffer(pem: string): ArrayBuffer {
   const base64 = pem
+    .replace(/\\n/g, '\n') // handle literal \n sequences from secret storage
     .replace(/-----BEGIN[^-]+-----/g, '')
     .replace(/-----END[^-]+-----/g, '')
     .replace(/\s+/g, '')
