@@ -21,12 +21,9 @@ function toBase64Url(buffer: ArrayBuffer): string {
 
 function pemToArrayBuffer(pem: string): ArrayBuffer {
   const base64 = pem
-    .replace(/\\r\\n/g, '\n') // literal \r\n sequences
-    .replace(/\\n/g, '\n') // literal \n sequences from secret storage
-    .replace(/\\r/g, '\n') // literal \r sequences
     .replace(/-----BEGIN[^-]+-----/g, '')
     .replace(/-----END[^-]+-----/g, '')
-    .replace(/[^A-Za-z0-9+/=]/g, '') // strip ALL non-base64 chars (whitespace, BOM, etc.)
+    .replace(/\s+/g, '')
   const binary = atob(base64)
   const buffer = new ArrayBuffer(binary.length)
   const bytes = new Uint8Array(buffer)
@@ -99,7 +96,6 @@ export async function querySnowflake(
       Authorization: `Bearer ${jwt}`,
       'X-Snowflake-Authorization-Token-Type': 'KEYPAIR_JWT',
       Accept: 'application/json',
-      'User-Agent': 'owner-seo-audit/1.0',
     },
     body: JSON.stringify({
       statement: sql,
