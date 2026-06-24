@@ -491,8 +491,8 @@ export const runAudit = createServerFn({ method: 'POST' })
     }
 
     // Type narrowing guard — unreachable at runtime (Snowflake fallback always assigns above)
-  if (!location) throw new Error(`Location "${locationId}" not found in D1 or Snowflake.`)
-  const website = location.website_url?.replace(/\/$/, '') ?? ''
+    if (!location) throw new Error(`Location "${locationId}" not found in D1 or Snowflake.`)
+    const website = location.website_url?.replace(/\/$/, '') ?? ''
 
     // ── 2. Fetch website for crawl-based checks ────────────────────────────
     const [homePage, robotsPage, llmsTxt, sitemapXml] = await Promise.all([
