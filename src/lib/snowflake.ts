@@ -99,6 +99,7 @@ export async function querySnowflake(
       Authorization: `Bearer ${jwt}`,
       'X-Snowflake-Authorization-Token-Type': 'KEYPAIR_JWT',
       Accept: 'application/json',
+      'User-Agent': 'owner-seo-audit/1.0',
     },
     body: JSON.stringify({
       statement: sql,
