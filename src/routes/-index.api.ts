@@ -67,6 +67,17 @@ export interface AuditReport {
   top3Actions: string[]
   timeline: string
   status: 'Diagnosing' | 'Actioning' | 'Monitoring' | 'Resolved'
+  criticalAlerts: CriticalAlert[]
+}
+
+export interface CriticalAlert {
+  id: string
+  title: string
+  description: string
+  severity: 'P0' | 'P1'
+  detectedAt: string
+  estimatedSince?: string
+  action: string
 }
 
 // ─── Helper: fetch a URL and return basic info ─────────────────────────────
@@ -100,6 +111,247 @@ function extractJsonLd(html: string): Record<string, unknown>[] {
 
 function check(id: string, label: string, status: CheckStatus, detail: string): CheckItem {
   return { id, label, status, detail }
+}
+
+function buildCriticalAlerts(params: {
+  location: {
+    avg_star_rating: number
+    review_count: number
+    gbp_profile_views_30d: number
+    gbp_profile_views_90d: number
+    organic_sessions_30d: number
+    organic_sessions_prior_30d: number
+    yext_sync_status: string
+    yext_managed: number
+    website_url: string
+  }
+  homePage: { ok: boolean; status: number }
+  robotsTxt: string
+  html: string
+  llmsTxtOk: boolean
+  recentOneStar: number
+  daysSinceLastReview: number // days since most recent review
+  today: string // ISO date string
+  gbpViewsDropDate?: string // from gbp_drop_dates table
+}): CriticalAlert[] {
+  const alerts: CriticalAlert[] = []
+  const {
+    location,
+    homePage,
+    robotsTxt,
+    html,
+    llmsTxtOk,
+    recentOneStar,
+    daysSinceLastReview,
+    today,
+    gbpViewsDropDate,
+  } = params
+  if (!homePage.ok) {
+    alerts.push({
+      id: 'site-down',
+      title: 'Website is down or unreachable',
+      description: `${location.website_url} returned HTTP ${homePage.status || 'no response'}. The site is not serving content.`,
+      severity: 'P0',
+      detectedAt: today,
+      action: 'Check hosting provider immediately. Verify DNS, server status, and SSL certificate.',
+    })
+  }
+
+  const hasNoindex =
+    /<meta[^>]+name=["']robots["'][^>]*content=["'][^"']*noindex/i.test(html) ||
+    /<meta[^>]+content=["'][^"']*noindex[^"']*["'][^>]*name=["']robots["']/i.test(html)
+  if (hasNoindex) {
+    alerts.push({
+      id: 'noindex-homepage',
+      title: 'Homepage is set to noindex — invisible to Google',
+      description:
+        'A noindex meta tag on the homepage tells Google not to index it. This completely removes organic visibility.',
+      severity: 'P0',
+      detectedAt: today,
+      action: 'Remove the noindex meta tag from the homepage immediately.',
+    })
+  }
+
+  const blockingAll = /user-agent:\s*\*/i.test(robotsTxt) && /disallow:\s*\/\s*$/im.test(robotsTxt)
+  if (blockingAll) {
+    alerts.push({
+      id: 'robots-block-all',
+      title: 'robots.txt is blocking all search engine crawlers',
+      description:
+        'A "User-agent: * / Disallow: /" rule prevents Google, Bing, and LLM crawlers from indexing the site.',
+      severity: 'P0',
+      detectedAt: today,
+      action: 'Edit robots.txt immediately to remove the global Disallow rule.',
+    })
+  }
+
+  if (
+    location.organic_sessions_prior_30d > 20 &&
+    location.organic_sessions_30d < location.organic_sessions_prior_30d * 0.4
+  ) {
+    const drop = Math.round(
+      ((location.organic_sessions_prior_30d - location.organic_sessions_30d) /
+        location.organic_sessions_prior_30d) *
+        100,
+    )
+    const d = new Date(today)
+    d.setDate(d.getDate() - 30)
+    alerts.push({
+      id: 'traffic-collapse',
+      title: `Organic traffic collapsed — down ${drop}% vs prior 30 days`,
+      description: `Sessions dropped from ${location.organic_sessions_prior_30d} to ${location.organic_sessions_30d}. Likely a penalty, algorithm update, or technical issue.`,
+      severity: 'P0',
+      detectedAt: today,
+      estimatedSince: d.toISOString().split('T')[0],
+      action:
+        'Check Google Search Console for manual actions, coverage errors, or a sharp impressions drop.',
+    })
+  }
+
+  if (location.gbp_profile_views_30d === 0 && location.gbp_profile_views_90d > 0) {
+    alerts.push({
+      id: 'gbp-views-zero',
+      title: 'GBP profile views dropped to zero — possible suspension',
+      description:
+        'The GBP had views in the prior 90-day window but zero in the last 30 days. Strong signal of suspension or loss of verification.',
+      severity: 'P0',
+      detectedAt: today,
+      estimatedSince: gbpViewsDropDate,
+      action:
+        'Log into Google Business Profile immediately to check for a suspension notice. If suspended, submit a reinstatement request with supporting documentation.',
+    })
+  }
+
+  if (
+    location.yext_managed === 1 &&
+    location.yext_sync_status &&
+    location.yext_sync_status !== 'LIVE' &&
+    location.yext_sync_status !== 'unknown'
+  ) {
+    alerts.push({
+      id: 'yext-broken',
+      title: `Yext sync is not live — status: ${location.yext_sync_status}`,
+      description:
+        'Yext is not successfully syncing this location. NAP inconsistencies may be spreading across directories.',
+      severity: 'P0',
+      detectedAt: today,
+      action: 'Log into Yext and resolve any billing, verification, or conflict issues.',
+    })
+  }
+
+  if (location.avg_star_rating > 0 && location.avg_star_rating < 3.0) {
+    alerts.push({
+      id: 'rating-crisis',
+      title: `Star rating critical — ${location.avg_star_rating.toFixed(1)}★ (below 3.0)`,
+      description:
+        'A rating below 3.0 significantly suppresses local pack rankings and deters clicks.',
+      severity: 'P0',
+      detectedAt: today,
+      action:
+        'Activate emergency review response and launch review acquisition campaign immediately.',
+    })
+  }
+
+  if (recentOneStar >= 5) {
+    alerts.push({
+      id: 'review-attack',
+      title: `Possible review attack — ${recentOneStar} × 1-star reviews in last 7 days`,
+      description:
+        'Unusually high volume of 1-star reviews in a short window may indicate a coordinated attack.',
+      severity: 'P0',
+      detectedAt: today,
+      action: 'Flag suspicious reviews for removal via GBP. Respond to all reviews immediately.',
+    })
+  }
+
+  if (
+    location.organic_sessions_prior_30d > 20 &&
+    location.organic_sessions_30d < location.organic_sessions_prior_30d * 0.7 &&
+    location.organic_sessions_30d >= location.organic_sessions_prior_30d * 0.4
+  ) {
+    const drop = Math.round(
+      ((location.organic_sessions_prior_30d - location.organic_sessions_30d) /
+        location.organic_sessions_prior_30d) *
+        100,
+    )
+    alerts.push({
+      id: 'traffic-drop',
+      title: `Organic traffic down ${drop}% vs prior 30 days`,
+      description: `Sessions dropped from ${location.organic_sessions_prior_30d} to ${location.organic_sessions_30d}.`,
+      severity: 'P1',
+      detectedAt: today,
+      action: 'Review keyword rankings and check Search Console for coverage issues.',
+    })
+  }
+
+  if (location.avg_star_rating >= 3.0 && location.avg_star_rating < 3.5) {
+    alerts.push({
+      id: 'rating-low',
+      title: `Star rating below 3.5 — ${location.avg_star_rating.toFixed(1)}★`,
+      description: 'Ratings below 3.5 suppress local pack rankings and hurt click-through rate.',
+      severity: 'P1',
+      detectedAt: today,
+      action: 'Launch a review acquisition campaign and respond to all negative reviews.',
+    })
+  }
+
+  if (daysSinceLastReview >= 60) {
+    alerts.push({
+      id: 'review-stagnation',
+      title: `No new reviews in ${daysSinceLastReview} days`,
+      description:
+        'Review velocity is a local ranking factor. Stagnant review counts signal low engagement to Google.',
+      severity: 'P1',
+      detectedAt: today,
+      action:
+        'Activate review acquisition: post-visit email/SMS, QR code, or Owner review request flow.',
+    })
+  }
+
+  if (location.gbp_profile_views_90d > 0 && location.gbp_profile_views_30d > 0) {
+    const monthly90avg = location.gbp_profile_views_90d / 3
+    if (location.gbp_profile_views_30d < monthly90avg * 0.5) {
+      const drop = Math.round(
+        ((monthly90avg - location.gbp_profile_views_30d) / monthly90avg) * 100,
+      )
+      alerts.push({
+        id: 'gbp-views-drop',
+        title: `GBP profile views down ${drop}% vs 90-day average`,
+        description: `Monthly average was ~${Math.round(monthly90avg).toLocaleString()} views but last 30 days shows only ${location.gbp_profile_views_30d.toLocaleString()}.`,
+        severity: 'P1',
+        detectedAt: today,
+        estimatedSince: gbpViewsDropDate,
+        action:
+          'Verify GBP is still appearing in local pack for primary keywords. Check if primary category was changed recently.',
+      })
+    }
+  }
+  if (!llmsTxtOk) {
+    alerts.push({
+      id: 'llms-txt-missing',
+      title: 'llms.txt missing — not optimized for AI search',
+      description: 'No llms.txt file found at the site root.',
+      severity: 'P1',
+      detectedAt: today,
+      action: 'Create a llms.txt file at the site root following the llmstxt.org spec.',
+    })
+  }
+
+  // ── P1: Historical GBP views drop detected ──────────────────────────────
+  if (gbpViewsDropDate) {
+    alerts.push({
+      id: 'gbp-views-historical-drop',
+      title: 'GBP profile views dropped significantly (historical data)',
+      description: `A 50%+ sustained drop in GBP profile views was detected in historical data.`,
+      severity: 'P1',
+      detectedAt: today,
+      estimatedSince: gbpViewsDropDate,
+      action:
+        'Investigate what changed around this date — category edits, GBP policy violations, or a competitor claiming the listing.',
+    })
+  }
+
+  return alerts.sort((a, b) => (a.severity === b.severity ? 0 : a.severity === 'P0' ? -1 : 1))
 }
 
 // ─── Main audit function ───────────────────────────────────────────────────
@@ -801,6 +1053,12 @@ export const runAudit = createServerFn({ method: 'POST' })
       .concat(['—', '—', '—'])
       .slice(0, 3)
 
+    const gbpDropRow = await env.DB.prepare(
+      'SELECT drop_date FROM gbp_drop_dates WHERE location_id = ? AND metric = ?',
+    )
+      .bind(location.location_id, 'profile_views')
+      .first<{ drop_date: string }>()
+
     return {
       locationId,
       brand: location.brand_name ?? locationId,
@@ -825,5 +1083,16 @@ export const runAudit = createServerFn({ method: 'POST' })
       top3Actions,
       timeline: 'TBD after manual review',
       status: 'Diagnosing',
+      criticalAlerts: buildCriticalAlerts({
+        location,
+        homePage,
+        robotsTxt: robotsPage.html,
+        html,
+        llmsTxtOk: llmsTxt.ok,
+        recentOneStar: 0,
+        daysSinceLastReview: 0,
+        today: new Date().toISOString().split('T')[0],
+        gbpViewsDropDate: gbpDropRow?.drop_date,
+      }),
     }
   })

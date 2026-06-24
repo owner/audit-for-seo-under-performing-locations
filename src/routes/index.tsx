@@ -2,6 +2,8 @@ import { createFileRoute } from '@tanstack/react-router'
 import { useState } from 'react'
 import { getCurrentUser, doRequireAuth, doSignOut, runAudit } from './-index.api'
 import type { AuditReport, CheckItem, CheckStatus } from './-index.api'
+import { downloadNotionDoc } from '../lib/notion-export'
+import type { CriticalAlert } from './-index.api'
 
 // These imports are only here to keep the build happy if the old -index.api.ts
 // is still in place. They are never actually called.
@@ -174,7 +176,97 @@ function CheckTable({ title, checks }: { title: string; checks: CheckItem[] }) {
     </div>
   )
 }
-
+function CriticalAlerts({ alerts }: { alerts: CriticalAlert[] }) {
+  if (!alerts || alerts.length === 0) return null
+  return (
+    <div style={{ marginBottom: 24 }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 12 }}>
+        <span style={{ fontSize: 18 }}>🚨</span>
+        <span style={{ fontSize: 15, fontWeight: 700, color: '#111827' }}>Critical Issues</span>
+        <span
+          style={{
+            fontSize: 11,
+            fontWeight: 600,
+            background: '#fef2f2',
+            color: '#dc2626',
+            border: '1px solid #fecaca',
+            borderRadius: 4,
+            padding: '2px 8px',
+          }}
+        >
+          {alerts.filter((a) => a.severity === 'P0').length} P0
+          {alerts.filter((a) => a.severity === 'P1').length > 0 &&
+            ` · ${alerts.filter((a) => a.severity === 'P1').length} P1`}
+        </span>
+      </div>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+        {alerts.map((alert) => (
+          <div
+            key={alert.id}
+            style={{
+              background: alert.severity === 'P0' ? '#fff5f5' : '#fffbeb',
+              border: `1px solid ${alert.severity === 'P0' ? '#fecaca' : '#fde68a'}`,
+              borderLeft: `4px solid ${alert.severity === 'P0' ? '#dc2626' : '#f59e0b'}`,
+              borderRadius: 8,
+              padding: '12px 16px',
+            }}
+          >
+            <div
+              style={{
+                display: 'flex',
+                alignItems: 'flex-start',
+                justifyContent: 'space-between',
+                gap: 12,
+                marginBottom: 6,
+              }}
+            >
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                <span
+                  style={{
+                    fontSize: 11,
+                    fontWeight: 700,
+                    color: alert.severity === 'P0' ? '#dc2626' : '#d97706',
+                    background: alert.severity === 'P0' ? '#fef2f2' : '#fef3c7',
+                    border: `1px solid ${alert.severity === 'P0' ? '#fecaca' : '#fde68a'}`,
+                    borderRadius: 4,
+                    padding: '1px 6px',
+                    flexShrink: 0,
+                  }}
+                >
+                  {alert.severity}
+                </span>
+                <span style={{ fontSize: 13, fontWeight: 600, color: '#111827', lineHeight: 1.3 }}>
+                  {alert.title}
+                </span>
+              </div>
+              <div style={{ fontSize: 11, color: '#6b7280', flexShrink: 0, textAlign: 'right' }}>
+                <div>Detected: {alert.detectedAt}</div>
+                {alert.estimatedSince && (
+                  <div style={{ color: '#dc2626' }}>Est. since: {alert.estimatedSince}</div>
+                )}
+              </div>
+            </div>
+            <p style={{ fontSize: 12, color: '#374151', margin: '0 0 8px 0', lineHeight: 1.5 }}>
+              {alert.description}
+            </p>
+            <div
+              style={{
+                fontSize: 12,
+                color: alert.severity === 'P0' ? '#dc2626' : '#92400e',
+                fontWeight: 500,
+                display: 'flex',
+                gap: 6,
+              }}
+            >
+              <span>→</span>
+              <span>{alert.action}</span>
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
+  )
+}
 // ─── Main page ─────────────────────────────────────────────────────────────
 
 function IndexPage() {
@@ -343,6 +435,7 @@ function IndexPage() {
                 marginBottom: 24,
               }}
             >
+              <CriticalAlerts alerts={report.criticalAlerts} />
               <div
                 style={{
                   display: 'flex',
@@ -379,6 +472,22 @@ function IndexPage() {
                 >
                   {report.status}
                 </span>
+                <button
+                  onClick={() => downloadNotionDoc(report)}
+                  style={{
+                    marginLeft: 12,
+                    padding: '4px 14px',
+                    fontSize: 12,
+                    fontWeight: 500,
+                    background: '#000',
+                    color: '#fff',
+                    border: 'none',
+                    borderRadius: 6,
+                    cursor: 'pointer',
+                  }}
+                >
+                  ⬇ Download for Notion
+                </button>
               </div>
               <div
                 style={{
