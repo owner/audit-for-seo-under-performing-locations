@@ -435,7 +435,7 @@ function IndexPage() {
                 marginBottom: 24,
               }}
             >
-              <CriticalAlerts alerts={report.criticalAlerts} />
+              <CriticalAlerts alerts={report.criticalAlerts ?? []} />
               <div
                 style={{
                   display: 'flex',
